@@ -2,13 +2,17 @@
 
 import numpy as np
 import pytest
-from pydicom.dataset import Dataset
+from pydicom.dataset import Dataset, FileMetaDataset
+from pydicom.uid import ExplicitVRLittleEndian
 
 from imagex.preprocessing.series import order_slices, select_ct_series, stack_volume
 
 
 def _slice(z: float, thickness: float = 1.0, modality: str = "CT") -> Dataset:
     ds = Dataset()
+    # pydicom 3 refuses to decode pixel_array without a transfer syntax.
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     ds.Modality = modality
     ds.SliceThickness = thickness
     ds.ImagePositionPatient = [0.0, 0.0, z]
@@ -16,6 +20,7 @@ def _slice(z: float, thickness: float = 1.0, modality: str = "CT") -> Dataset:
     ds.Columns = 2
     ds.BitsAllocated = 16
     ds.BitsStored = 16
+    ds.HighBit = 15
     ds.SamplesPerPixel = 1
     ds.PhotometricInterpretation = "MONOCHROME2"
     ds.PixelRepresentation = 0
