@@ -1,0 +1,32 @@
+# Phase 1 preprocessing configuration.
+# Every value here must be versioned alongside the tensors it produced.
+
+deidentification:
+  strip_metadata: true
+  retain_fields:
+    - StudyInstanceUID
+    - SeriesInstanceUID
+    - SOPInstanceUID
+    - Modality
+    - Manufacturer
+    - ConvolutionKernel
+    - SliceThickness
+
+series_selection:
+  modality: CT
+  min_slices: 40
+  max_slice_thickness_mm: 3.0
+
+geometry:
+  target_spacing_mm: [1.0, 1.0, 1.0]
+  orientation: "LPS"
+
+intensity:
+  hu_min: -1000
+  hu_max: 400
+  clip_hu: true
+  normalization: "minmax"
+
+cache:
+  dir: "data/cache"
+  version: "v0"
