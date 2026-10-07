@@ -1,12 +1,19 @@
-"""DICOM loading and validation. Phase 1 foundation."""
+"""Tests for dicom_loader. No real DICOM needed yet."""
 
 from pathlib import Path
-import pydicom
+
+import pytest
+
+from imagex.preprocessing.dicom_loader import load_dicom_file, load_dicom_series
 
 
-def load_dicom_file(path: Path) -> pydicom.Dataset:
-    """Load a single DICOM file. Raises on unreadable input."""
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"No such DICOM file: {path}")
-    return pydicom.dcmread(path, force=False)
+def test_missing_file_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "does_not_exist.dcm"
+    with pytest.raises(FileNotFoundError):
+        load_dicom_file(missing)
+
+
+def test_missing_directory_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "no_such_dir"
+    with pytest.raises(NotADirectoryError):
+        load_dicom_series(missing)
