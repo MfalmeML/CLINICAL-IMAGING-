@@ -1,0 +1,9 @@
+-e git+https://github.com/MfalmeML/CLINICAL-IMAGING-.git@ac69143efcc6a30e758322c4d3923a9fbc78373e#egg=imagex
+iniconfig==2.3.1
+numpy==2.5.3
+packaging==26.3
+pluggy==1.6.0
+pydicom==3.0.2
+Pygments==2.21.0
+pytest==9.1.1
+simpleitk==2.5.6
