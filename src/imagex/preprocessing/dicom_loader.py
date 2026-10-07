@@ -1,45 +1,37 @@
-"""Load DICOM files and series from disk."""
-
-from __future__ import annotations
+"""DICOM loading and validation. Phase 1 foundation."""
 
 from pathlib import Path
 
 import pydicom
-from pydicom.dataset import FileDataset
 
 
-def load_dicom_file(path: str | Path) -> FileDataset:
-    """Read a single DICOM file.
-
-    Raises:
-        FileNotFoundError: if ``path`` does not exist or is not a file.
-        pydicom.errors.InvalidDicomError: if the file is not valid DICOM.
-    """
+def load_dicom_file(path: Path) -> pydicom.Dataset:
+    """Load a single DICOM file. Raises on unreadable input."""
     path = Path(path)
     if not path.is_file():
-        raise FileNotFoundError(f"DICOM file not found: {path}")
-    return pydicom.dcmread(path)
+        raise FileNotFoundError(f"No such DICOM file: {path}")
+    return pydicom.dcmread(path, force=False)
 
 
-def load_dicom_series(directory: str | Path) -> list[FileDataset]:
-    """Read every ``.dcm`` file in a directory, ordered by InstanceNumber.
+def load_dicom_series(directory: Path) -> list[pydicom.Dataset]:
+    """Load all readable DICOM files in a directory.
 
-    Raises:
-        NotADirectoryError: if ``directory`` is not an existing directory.
-        ValueError: if the directory contains no ``.dcm`` files.
-        pydicom.errors.InvalidDicomError: if any ``.dcm`` file is invalid.
+    Order is not guaranteed. Unreadable files are skipped silently.
+    Raises NotADirectoryError if path is not a directory.
+    Raises ValueError if no readable DICOM files are found.
     """
     directory = Path(directory)
     if not directory.is_dir():
-        raise NotADirectoryError(f"DICOM directory not found: {directory}")
+        raise NotADirectoryError(f"Not a directory: {directory}")
 
-    files = sorted(
-        p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".dcm"
-    )
-    if not files:
-        raise ValueError(f"No .dcm files found in: {directory}")
+    datasets: list[pydicom.Dataset] = []
+    for f in sorted(directory.glob("*")):
+        try:
+            datasets.append(load_dicom_file(f))
+        except Exception:
+            continue
 
-    datasets = [load_dicom_file(p) for p in files]
-    # Slices are not guaranteed to sort correctly by filename.
-    datasets.sort(key=lambda ds: int(getattr(ds, "InstanceNumber", 0)))
+    if not datasets:
+        raise ValueError(f"No readable DICOM files in: {directory}")
+
     return datasets
