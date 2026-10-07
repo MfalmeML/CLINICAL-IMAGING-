@@ -6,6 +6,8 @@ Strips PHI from metadata. Does not yet redact burned-in pixel annotations.
 
 from __future__ import annotations
 
+import copy
+
 import pydicom
 
 
@@ -65,30 +67,34 @@ def _is_phi(keyword: str) -> bool:
     return any(keyword.startswith(prefix) for prefix in _PHI_KEYWORDS)
 
 
-def deidentify_dataset(ds: pydicom.Dataset) -> pydicom.Dataset:
-    """Return a de-identified copy. Retained tags survive; PHI is removed.
+def _scrub(ds: pydicom.Dataset) -> None:
+    """Remove PHI from ``ds`` in place, recursing into sequence items.
 
-    Modifies a deep copy; input dataset is untouched.
+    Internal helper: only call this on a dataset you own (a copy).
+    Each level deletes only its own elements, so a tag in a nested item
+    can never remove a same-numbered tag at another level.
     """
-    out = ds.copy()
-
-    for elem in list(out.iterall()):
+    for elem in list(ds):  # snapshot: we delete while walking
         if elem.tag.group == 0x7FE0:  # PixelData
             continue
         keyword = elem.keyword or ""
         if keyword in _RETAINED_TAGS:
             continue
         if _is_phi(keyword):
-            del out[elem.tag]
-            continue
-        if keyword == "" and elem.VR not in ("SQ", "OB", "OW", "UN"):
+            del ds[elem.tag]
+        elif keyword == "" and elem.VR not in ("SQ", "OB", "OW", "UN"):
             # Unknown private/non-standard tag with a value: clear it.
-            try:
-                del out[elem.tag]
-            except KeyError:
-                pass
+            del ds[elem.tag]
         elif elem.VR == "SQ":
             for item in elem.value:
-                deidentify_dataset(item)
+                _scrub(item)
 
+
+def deidentify_dataset(ds: pydicom.Dataset) -> pydicom.Dataset:
+    """Return a de-identified deep copy. Retained tags survive; PHI is removed.
+
+    The input dataset is never modified, including nested sequence items.
+    """
+    out = copy.deepcopy(ds)
+    _scrub(out)
     return out
