@@ -8,3 +8,4 @@ data/cache/
 *.nii.gz
 *.dcm
 .env
+data/
