@@ -1,7 +1,9 @@
-"""Baseline ladder runner. Synthetic-data compatible.
+"""Baseline ladder runner. Produces metrics required by the build plan.
 
-Trains and evaluates a baseline model on a set of preprocessed volumes.
-Records metrics to a structured dict so baselines are comparable.
+Training loop is delegated to train.py. This module handles splitting,
+orchestration, and evaluation-metric aggregation. Accuracy is reported
+for continuity but is not the decision metric; AUROC, AUPRC, sensitivity,
+and specificity at a fixed threshold are.
 """
 
 from __future__ import annotations
@@ -10,11 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from imagex.perception.dataset import VolumeDataset
+from imagex.perception.metrics import BinaryMetrics, binary_metrics
 from imagex.perception.splits import deterministic_holdout
 from imagex.perception.train import EpochMetrics, evaluate, train_one_epoch
 
@@ -27,7 +31,9 @@ class LadderRun:
     n_test: int
     final_train: EpochMetrics
     final_val: EpochMetrics
-    test: EpochMetrics
+    test_loss: float
+    test_accuracy: float
+    test_binary: BinaryMetrics
 
 
 def _make_loader(
@@ -40,6 +46,48 @@ def _make_loader(
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
 
+@torch.no_grad()
+def _collect_scores(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Run model over loader. Returns (scores, labels, mean_loss, accuracy).
+
+    scores are softmax probabilities of the positive class.
+    """
+    model.eval()
+    criterion = nn.CrossEntropyLoss()
+
+    all_scores: list[np.ndarray] = []
+    all_labels: list[np.ndarray] = []
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for inputs, targets in loader:
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+
+        logits = model(inputs)
+        loss = criterion(logits, targets)
+        probs = torch.softmax(logits, dim=1)
+
+        bs = inputs.size(0)
+        total_loss += float(loss.item()) * bs
+        total_correct += int((logits.argmax(dim=1) == targets).sum().item())
+        total_samples += bs
+
+        all_scores.append(probs[:, 1].detach().cpu().numpy())
+        all_labels.append(targets.detach().cpu().numpy())
+
+    scores = np.concatenate(all_scores) if all_scores else np.array([])
+    labels = np.concatenate(all_labels) if all_labels else np.array([])
+    mean_loss = total_loss / max(1, total_samples)
+    accuracy = total_correct / max(1, total_samples)
+    return scores, labels, mean_loss, accuracy
+
+
 def run_baseline(
     name: str,
     model: nn.Module,
@@ -49,18 +97,21 @@ def run_baseline(
     batch_size: int = 4,
     lr: float = 1e-3,
     seed: int = 42,
+    threshold: float = 0.5,
     device: str = "cpu",
 ) -> LadderRun:
-    """Train and evaluate one baseline. Deterministic given seed.
-
-    `volume_paths` and `labels` are keyed by seriesuid. Seriesuids missing
-    from either are dropped before splitting.
-    """
+    """Train and evaluate one baseline. Deterministic given seed."""
     common = sorted(set(volume_paths) & set(labels))
     if len(common) < 3:
-        raise ValueError(f"need at least 3 series with both volume and label, got {len(common)}")
+        raise ValueError(f"need at least 3 series, got {len(common)}")
 
     split = deterministic_holdout(common, seed=seed)
+
+    if not split.train or not split.val or not split.test:
+        raise ValueError(
+            f"empty partition: train={len(split.train)} "
+            f"val={len(split.val)} test={len(split.test)}"
+        )
 
     train_paths = [volume_paths[s] for s in split.train]
     train_labels = [labels[s] for s in split.train]
@@ -68,12 +119,6 @@ def run_baseline(
     val_labels = [labels[s] for s in split.val]
     test_paths = [volume_paths[s] for s in split.test]
     test_labels = [labels[s] for s in split.test]
-
-    if not train_paths or not val_paths or not test_paths:
-        raise ValueError(
-            f"split produced empty partition: train={len(train_paths)} "
-            f"val={len(val_paths)} test={len(test_paths)}"
-        )
 
     torch.manual_seed(seed)
     dev = torch.device(device)
@@ -95,7 +140,10 @@ def run_baseline(
 
     assert final_train is not None and final_val is not None
 
-    test_metrics = evaluate(model, test_loader, criterion, dev)
+    scores, test_labels_arr, test_loss, test_accuracy = _collect_scores(
+        model, test_loader, dev
+    )
+    test_binary = binary_metrics(scores, test_labels_arr, threshold=threshold)
 
     return LadderRun(
         name=name,
@@ -104,12 +152,14 @@ def run_baseline(
         n_test=len(test_paths),
         final_train=final_train,
         final_val=final_val,
-        test=test_metrics,
+        test_loss=test_loss,
+        test_accuracy=test_accuracy,
+        test_binary=test_binary,
     )
 
 
 def run_to_dict(run: LadderRun) -> dict[str, Any]:
-    """Convert a LadderRun to a JSON-serializable dict for experiment tracking."""
+    """JSON-serializable view of a LadderRun for tracking."""
     return {
         "name": run.name,
         "n_train": run.n_train,
@@ -126,8 +176,14 @@ def run_to_dict(run: LadderRun) -> dict[str, Any]:
             "n_samples": run.final_val.n_samples,
         },
         "test": {
-            "loss": run.test.loss,
-            "accuracy": run.test.accuracy,
-            "n_samples": run.test.n_samples,
+            "loss": run.test_loss,
+            "accuracy": run.test_accuracy,
+            "sensitivity": run.test_binary.sensitivity,
+            "specificity": run.test_binary.specificity,
+            "auroc": run.test_binary.auroc,
+            "auprc": run.test_binary.auprc,
+            "n_pos": run.test_binary.n_pos,
+            "n_neg": run.test_binary.n_neg,
+            "threshold": run.test_binary.threshold,
         },
     }

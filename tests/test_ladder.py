@@ -12,8 +12,6 @@ from imagex.perception.ladder import run_baseline, run_to_dict
 
 
 class TinyVolumeModel(nn.Module):
-    """Small model over a 3D volume. Fast enough for tests."""
-
     def __init__(self) -> None:
         super().__init__()
         self.conv = nn.Conv3d(1, 4, kernel_size=3, padding=1)
@@ -27,16 +25,14 @@ class TinyVolumeModel(nn.Module):
 
 
 def _write_volumes(tmp_path: Path, n: int, shape=(2, 8, 8)) -> tuple[dict, dict]:
-    paths: dict[str, Path] = {}
-    labels: dict[str, int] = {}
+    paths: dict = {}
+    labels: dict = {}
     for i in range(n):
         s = f"series_{i:03d}"
         p = tmp_path / f"{s}.npy"
-        label = i % 2
-        arr = np.full(shape, float(label), dtype=np.float32)
-        np.save(p, arr)
+        np.save(p, np.full(shape, float(i % 2), dtype=np.float32))
         paths[s] = p
-        labels[s] = label
+        labels[s] = i % 2
     return paths, labels
 
 
@@ -52,16 +48,18 @@ def test_run_baseline_completes(tmp_path: Path) -> None:
         seed=42,
     )
     assert run.n_train + run.n_val + run.n_test == 30
-    assert 0.0 <= run.test.accuracy <= 1.0
-    assert run.test.n_samples == run.n_test
+    assert run.test_binary.n_pos + run.test_binary.n_neg == run.n_test
+    assert 0.0 <= run.test_accuracy <= 1.0
+    assert 0.0 <= run.test_binary.sensitivity <= 1.0 or np.isnan(run.test_binary.sensitivity)
+    assert 0.0 <= run.test_binary.auroc <= 1.0 or np.isnan(run.test_binary.auroc)
 
 
 def test_run_baseline_is_deterministic(tmp_path: Path) -> None:
     paths, labels = _write_volumes(tmp_path, n=30)
     a = run_baseline("tiny", TinyVolumeModel(), paths, labels, epochs=2, seed=42)
     b = run_baseline("tiny", TinyVolumeModel(), paths, labels, epochs=2, seed=42)
-    assert a.test.accuracy == pytest.approx(b.test.accuracy)
-    assert a.final_train.loss == pytest.approx(b.final_train.loss)
+    assert a.test_accuracy == pytest.approx(b.test_accuracy)
+    assert a.test_binary.auroc == pytest.approx(b.test_binary.auroc)
 
 
 def test_run_baseline_rejects_too_few(tmp_path: Path) -> None:
@@ -77,4 +75,5 @@ def test_run_to_dict_is_json_serializable(tmp_path: Path) -> None:
     s = json.dumps(d)
     parsed = json.loads(s)
     assert parsed["name"] == "tiny"
-    assert "test" in parsed and "accuracy" in parsed["test"]
+    for key in ("auroc", "auprc", "sensitivity", "specificity", "threshold"):
+        assert key in parsed["test"]
