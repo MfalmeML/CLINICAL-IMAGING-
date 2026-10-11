@@ -1,0 +1,11 @@
+numpy
+pandas
+SimpleITK
+pyyaml
+pydicom>=3.0
+
+[data]
+tcia_utils
+
+[dev]
+pytest
