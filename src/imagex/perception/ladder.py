@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from imagex.perception.dataset import VolumeDataset
 from imagex.perception.metrics import BinaryMetrics, binary_metrics
-from imagex.perception.splits import deterministic_holdout
+from imagex.perception.stratified_splits import stratified_holdout
 from imagex.perception.train import EpochMetrics, evaluate, train_one_epoch
 
 
@@ -44,6 +44,21 @@ def _make_loader(
 ) -> DataLoader:
     ds = VolumeDataset(paths, labels)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+
+
+def _require_both_classes(split_name: str, labels: list[int]) -> None:
+    """Fail loudly if a split has only one class.
+
+    With one class, specificity, AUROC and FROC are undefined and AUPRC is
+    trivially 1.0, so a run would look finished while reporting nothing.
+    """
+    n_pos = sum(1 for y in labels if y == 1)
+    n_neg = sum(1 for y in labels if y == 0)
+    if n_pos == 0 or n_neg == 0:
+        raise ValueError(
+            f"{split_name} split must contain both classes, got "
+            f"{n_pos} positive and {n_neg} negative"
+        )
 
 
 @torch.no_grad()
@@ -100,12 +115,25 @@ def run_baseline(
     threshold: float = 0.5,
     device: str = "cpu",
 ) -> LadderRun:
-    """Train and evaluate one baseline. Deterministic given seed."""
+    """Train and evaluate one baseline.
+
+    The split, batch order and training are deterministic given ``seed``.
+    The seed is applied after ``model`` already exists, so it does not control
+    the model's initial weights: pass identically initialized models to get
+    identical runs.
+
+    Raises ValueError if labels are not 0/1, if there are too few series, or if
+    the train, validation or test split lacks either class.
+    """
     common = sorted(set(volume_paths) & set(labels))
     if len(common) < 3:
         raise ValueError(f"need at least 3 series, got {len(common)}")
 
-    split = deterministic_holdout(common, seed=seed)
+    bad = {labels[s] for s in common} - {0, 1}
+    if bad:
+        raise ValueError(f"labels must be 0 or 1, found {sorted(bad)}")
+
+    split = stratified_holdout(common, labels, seed=seed)
 
     if not split.train or not split.val or not split.test:
         raise ValueError(
@@ -119,6 +147,10 @@ def run_baseline(
     val_labels = [labels[s] for s in split.val]
     test_paths = [volume_paths[s] for s in split.test]
     test_labels = [labels[s] for s in split.test]
+
+    _require_both_classes("train", train_labels)
+    _require_both_classes("val", val_labels)
+    _require_both_classes("test", test_labels)
 
     torch.manual_seed(seed)
     dev = torch.device(device)
