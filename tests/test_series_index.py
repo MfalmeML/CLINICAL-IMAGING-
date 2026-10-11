@@ -1,5 +1,6 @@
 """Tests for LUNA16 series index construction."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -34,7 +35,7 @@ def test_build_index_maps_correct_subset(tmp_path: Path) -> None:
 
 def test_build_index_missing_subset_raises(tmp_path: Path) -> None:
     _make_fake_luna16(tmp_path)
-    (tmp_path / "subset5").rmdir()
+    shutil.rmtree(tmp_path / "subset5")
     with pytest.raises(FileNotFoundError):
         build_subset_index(tmp_path)
 
