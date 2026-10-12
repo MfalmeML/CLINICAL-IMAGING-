@@ -12,11 +12,23 @@ correlate with error rate. That property is tested directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+# These are sibling classes, not subclasses of nn.Dropout, so each is listed.
+_DROPOUT_TYPES = (
+    nn.Dropout,
+    nn.Dropout1d,
+    nn.Dropout2d,
+    nn.Dropout3d,
+    nn.AlphaDropout,
+    nn.FeatureAlphaDropout,
+)
 
 
 @dataclass(frozen=True)
@@ -28,12 +40,23 @@ class UncertaintyResult:
     n_samples: int
 
 
-def _enable_dropout(model: nn.Module) -> None:
-    """Put model in eval mode but re-enable dropout layers."""
-    model.eval()
-    for module in model.modules():
-        if isinstance(module, nn.Dropout):
-            module.train()
+@contextmanager
+def _dropout_active(model: nn.Module) -> Iterator[None]:
+    """Eval mode with only the dropout layers switched on.
+
+    Every module's original train/eval flag is restored on exit, so the model
+    is never left in a different mode than it was found in.
+    """
+    saved = [(m, m.training) for m in model.modules()]
+    try:
+        model.eval()
+        for module in model.modules():
+            if isinstance(module, _DROPOUT_TYPES):
+                module.train()
+        yield
+    finally:
+        for module, was_training in saved:
+            module.training = was_training
 
 
 def _entropy(p: np.ndarray) -> np.ndarray:
@@ -54,6 +77,9 @@ def mc_dropout_predict(
     inputs: (N, ...) tensor. A batch of N inputs.
     n_samples: number of stochastic forward passes per input.
 
+    The model must output logits of shape (N, 2); class 1 is the positive class.
+    The model's train/eval mode is the same after the call as before it.
+
     mean_probability: average softmax probability of class 1 across passes.
     std_probability: standard deviation of that probability across passes.
     predictive_entropy: entropy of the mean probability.
@@ -66,13 +92,16 @@ def mc_dropout_predict(
     if inputs.ndim < 2:
         raise ValueError(f"inputs must have at least 2 dims, got {inputs.shape}")
 
-    _enable_dropout(model)
-
     all_probs: list[np.ndarray] = []
-    for _ in range(n_samples):
-        logits = model(inputs)
-        probs = torch.softmax(logits, dim=1)[:, 1]
-        all_probs.append(probs.detach().cpu().numpy())
+    with _dropout_active(model):
+        for _ in range(n_samples):
+            logits = model(inputs)
+            if logits.ndim != 2 or logits.shape[1] != 2:
+                raise ValueError(
+                    f"expected logits of shape (N, 2), got {tuple(logits.shape)}"
+                )
+            probs = torch.softmax(logits, dim=1)[:, 1]
+            all_probs.append(probs.detach().cpu().numpy())
 
     stacked = np.stack(all_probs, axis=0)  # (n_samples, N)
     mean_p = stacked.mean(axis=0)
@@ -93,34 +122,42 @@ def mc_dropout_predict(
     )
 
 
+def _average_ranks(a: np.ndarray) -> np.ndarray:
+    """Ranks starting at 1. Tied values share the mean of their ranks."""
+    _, inverse, counts = np.unique(a, return_inverse=True, return_counts=True)
+    last = np.cumsum(counts)  # rank of the last member of each tie group
+    return (last - (counts - 1) / 2.0)[inverse]
+
+
 def uncertainty_error_correlation(
     uncertainty: np.ndarray,
     correct: np.ndarray,
 ) -> float:
-    """Spearman-style rank correlation between uncertainty and error.
+    """Spearman rank correlation between uncertainty and correctness.
 
     Here, `correct` is 1 if the prediction was correct. A model whose
     uncertainty tracks its errors will have uncertainty negatively
     correlated with correctness: high uncertainty on wrong answers.
 
     Returns a value in [-1, 1]. Negative is expected and desired.
-    Pearson correlation of ranks is used to avoid requiring scipy.
+    Tied values get average ranks, so the result never depends on the order
+    of the samples. If either input is constant the correlation is undefined
+    and 0.0 is returned. Pearson correlation of ranks is used to avoid
+    requiring scipy.
     """
     uncertainty = np.asarray(uncertainty, dtype=np.float64)
     correct = np.asarray(correct, dtype=np.float64)
-    if uncertainty.shape != correct.shape:
-        raise ValueError("shape mismatch")
+    if uncertainty.ndim != 1 or uncertainty.shape != correct.shape:
+        raise ValueError(
+            f"expected matching 1-D arrays, got {uncertainty.shape} and {correct.shape}"
+        )
     if uncertainty.size < 2:
         raise ValueError("need at least 2 samples")
+    if not (np.isfinite(uncertainty).all() and np.isfinite(correct).all()):
+        raise ValueError("inputs must be finite")
 
-    def _rank(a: np.ndarray) -> np.ndarray:
-        order = np.argsort(a, kind="mergesort")
-        ranks = np.empty_like(order, dtype=np.float64)
-        ranks[order] = np.arange(len(a), dtype=np.float64)
-        return ranks
-
-    ru = _rank(uncertainty)
-    rc = _rank(correct)
+    ru = _average_ranks(uncertainty)
+    rc = _average_ranks(correct)
     ru = ru - ru.mean()
     rc = rc - rc.mean()
     denom = np.sqrt((ru * ru).sum() * (rc * rc).sum())
