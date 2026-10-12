@@ -6,6 +6,12 @@ trusted, or routed to human review?
 Decision rule (per sample):
     human-review if  (uncertainty > uncertainty_threshold)  OR  is_ood
     otherwise        safe-to-predict
+
+Input shape policy:
+    `inputs` is any batched tensor the model can consume. Tabular models
+    take (N, features); volumetric models take (N, C, D, H, W). The only
+    hard requirement is `ndim >= 2` — a batch of at least one dimension
+    of structure per sample.
 """
 
 from __future__ import annotations
@@ -73,13 +79,23 @@ def evaluate_safety(
 ) -> list[SafetyOutput]:
     """Run calibrated MC-dropout inference + OOD check on each input.
 
+    Accepts batched tensors of any rank >= 2:
+        - (N, features)          tabular
+        - (N, C, D, H, W)        volumetric
+        - (N, C, H, W)           image
+    The tensor is forwarded through `model` untouched; the safety engine
+    does not reshape or interpret the spatial dimensions.
+
     Raises:
-        ValueError: if inputs are not 2D, or mc_samples < 2.
+        ValueError: if `inputs` is not a torch.Tensor, has fewer than 2
+            dimensions (i.e. is unbatched), or if `mc_samples < 2`.
     """
     if not isinstance(inputs, torch.Tensor):
         raise ValueError(f"inputs must be a torch.Tensor, got {type(inputs)}")
-    if inputs.ndim != 2:
-        raise ValueError(f"inputs must be 2D, got shape {tuple(inputs.shape)}")
+    if inputs.ndim < 2:
+        raise ValueError(
+            f"inputs must be batched (at least 2D); got shape {tuple(inputs.shape)}"
+        )
     if mc_samples < 2:
         raise ValueError(f"mc_samples must be >= 2, got {mc_samples}")
     if inputs.shape[0] == 0:
