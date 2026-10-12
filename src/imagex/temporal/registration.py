@@ -77,7 +77,7 @@ def register_rigid(
     )
 
     registration = sitk.ImageRegistrationMethod()
-    registration.SetMetricAsMattesMutualInformation(number_of_histogram_bins=32)
+    registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=32)
     registration.SetMetricSamplingStrategy(registration.RANDOM)
     registration.SetMetricSamplingPercentage(0.2, seed=42)
     registration.SetInterpolator(sitk.sitkLinear)
@@ -135,7 +135,7 @@ def register_affine(
     )
 
     registration = sitk.ImageRegistrationMethod()
-    registration.SetMetricAsMattesMutualInformation(number_of_histogram_bins=32)
+    registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=32)
     registration.SetMetricSamplingStrategy(registration.RANDOM)
     registration.SetMetricSamplingPercentage(0.2, seed=42)
     registration.SetInterpolator(sitk.sitkLinear)
