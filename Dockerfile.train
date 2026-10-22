@@ -1,0 +1,29 @@
+# Research prototype. Not for clinical use.
+# Training image. Separate from the serving image (Dockerfile).
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# System dependencies for SimpleITK.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY configs/ ./configs/
+
+# Non-root.
+RUN useradd --create-home --uid 1000 imagex
+USER imagex
+
+# Default command is the ladder CLI. Override per run.
+ENTRYPOINT ["python", "-m"]
+CMD ["imagex.cli.run_ladder", "--help"]
